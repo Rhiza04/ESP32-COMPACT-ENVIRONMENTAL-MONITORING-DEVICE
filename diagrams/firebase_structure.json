@@ -1,0 +1,30 @@
+{
+  "Sensors": {
+    "DHT22": {
+      "Temperature": 0.0,
+      "Humidity": 0.0,
+      "Status": "OK",
+      "TimestampUnixMs": 0
+    },
+    "DS18B20": {
+      "Temperature": 0.0,
+      "Status": "OK",
+      "TimestampUnixMs": 0
+    }
+  },
+  "SensorHistory": {
+    "YYYY-MM-DD_HH-MM-SS": {
+      "DHT22": {
+        "Temperature": 0.0,
+        "Humidity": 0.0,
+        "Status": "OK",
+        "TimestampUnixMs": 0
+      },
+      "DS18B20": {
+        "Temperature": 0.0,
+        "Status": "OK",
+        "TimestampUnixMs": 0
+      }
+    }
+  }
+}
