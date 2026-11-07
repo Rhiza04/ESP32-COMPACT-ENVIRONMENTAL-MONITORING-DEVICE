@@ -1,4 +1,3 @@
-
 /*
   ESP32 COMPACT ENVIRONMENTAL MONITORING DEVICE
 
@@ -35,12 +34,15 @@
 #include <DallasTemperature.h>
 #include <math.h>
 
+#include <time.h>
+#include <sys/time.h>
+
 // =====================================================
 // 1. WIFI CONFIGURATION
 // =====================================================
 
-#define WIFI_SSID       "Darimu, 2000 megabyte yang lalu"
-#define WIFI_PASSWORD   "123456788"
+#define WIFI_SSID       "3RTV"
+#define WIFI_PASSWORD   "vv110668"
 
 // =====================================================
 // 2. FIREBASE CONFIGURATION
@@ -77,7 +79,7 @@ const unsigned long DS_CONVERSION_TIME = 200;
 
 const unsigned long BUTTON_DEBOUNCE = 50;
 
-const unsigned long FIREBASE_INTERVAL = 120000UL; // 2 minutes
+const unsigned long FIREBASE_INTERVAL = 300000UL; // 5 minutes
 
 const unsigned long WIFI_RETRY_INTERVAL = 10000;
 
@@ -132,7 +134,7 @@ bool dsValid = false;
 // false = DS18B20
 // true  = DHT22
 
-bool displayMode = false;
+bool displayMode = true;
 
 bool displayNeedsUpdate = true;
 
@@ -273,6 +275,20 @@ void setup() {
   // -----------------------------------------------
 
   connectWiFi();
+
+  // -----------------------------------------------
+  // NTP TIME SYNCHRONIZATION
+  // -----------------------------------------------
+
+  configTime(8 * 3600, 0, "pool.ntp.org", "time.nist.gov");
+
+  struct tm timeinfo;
+
+  if (getLocalTime(&timeinfo, 10000)) {
+    Serial.println("NTP TIME SYNCHRONIZED!");
+  } else {
+    Serial.println("NTP TIME SYNCHRONIZATION FAILED!");
+  }
 
   // -----------------------------------------------
   // FIREBASE
@@ -732,28 +748,69 @@ void uploadToFirebase() {
   Serial.println("============================");
 
   // -----------------------------------------------
-  // CREATE FIREBASE SERVER TIMESTAMP
+  // GENERATE SHARED TIMESTAMPS
   // -----------------------------------------------
 
-  // Firebase replaces this placeholder with its
-  // own server timestamp in Unix milliseconds.
+  struct timeval tv;
 
-  object_t timestampJSON;
+  if (gettimeofday(&tv, nullptr) != 0 || tv.tv_sec < 1700000000) {
+    Serial.println("INVALID SYSTEM TIME!");
+    return;
+  }
 
+  // Unix timestamp in milliseconds
+  uint64_t timestampUnixMs =
+      ((uint64_t)tv.tv_sec * 1000ULL) +
+      (tv.tv_usec / 1000);
+
+  // Convert to local time (UTC+8)
+  struct tm timeinfo;
+  localtime_r(&tv.tv_sec, &timeinfo);
+
+  // Human-readable timestamp
+  char timestampBuffer[40];
+
+  strftime(
+    timestampBuffer,
+    sizeof(timestampBuffer),
+    "%Y-%m-%d %H:%M:%S",
+    &timeinfo
+  );
+
+  char timestampReadable[50];
+
+  snprintf(
+    timestampReadable,
+    sizeof(timestampReadable),
+    "%s.%03ld +08:00",
+    timestampBuffer,
+    (long)(tv.tv_usec / 1000)
+  );
+
+  // Firebase JSON writer
   JsonWriter writer;
 
-  writer.create(
-    timestampJSON,
-    ".sv",
-    "timestamp"
+  // History key: YYYY-MM-DD_HH-MM-SS
+  char historyKey[30];
+
+  strftime(
+    historyKey,
+    sizeof(historyKey),
+    "%Y-%m-%d_%H-%M-%S",
+    &timeinfo
   );
+
+  Serial.print("Unix Timestamp: ");
+  Serial.println((unsigned long long)timestampUnixMs);
+
+  Serial.print("Readable Timestamp: ");
+  Serial.println(timestampReadable);
 
   // -----------------------------------------------
   // DHT22 JSON
   // -----------------------------------------------
 
   object_t dhtStatus;
-  object_t dhtTimestamp;
   object_t dhtTemperature;
   object_t dhtHumidity;
 
@@ -763,12 +820,6 @@ void uploadToFirebase() {
     dhtStatus,
     "Status",
     string_t(dhtValid ? "OK" : "ERROR")
-  );
-
-  writer.create(
-    dhtTimestamp,
-    "TimestampUnixMs",
-    timestampJSON
   );
 
   if (dhtValid) {
@@ -787,20 +838,18 @@ void uploadToFirebase() {
 
     writer.join(
       dhtJSON,
-      4,
+      3,
       dhtTemperature,
       dhtHumidity,
-      dhtStatus,
-      dhtTimestamp
+      dhtStatus
     );
 
   } else {
 
     writer.join(
       dhtJSON,
-      2,
-      dhtStatus,
-      dhtTimestamp
+      1,
+      dhtStatus
     );
   }
 
@@ -809,7 +858,6 @@ void uploadToFirebase() {
   // -----------------------------------------------
 
   object_t dsStatus;
-  object_t dsTimestamp;
   object_t dsTemperature;
 
   object_t dsJSON;
@@ -818,12 +866,6 @@ void uploadToFirebase() {
     dsStatus,
     "Status",
     string_t(dsValid ? "OK" : "ERROR")
-  );
-
-  writer.create(
-    dsTimestamp,
-    "TimestampUnixMs",
-    timestampJSON
   );
 
   if (dsValid) {
@@ -836,57 +878,81 @@ void uploadToFirebase() {
 
     writer.join(
       dsJSON,
-      3,
+      2,
       dsTemperature,
-      dsStatus,
-      dsTimestamp
+      dsStatus
     );
 
   } else {
 
     writer.join(
       dsJSON,
-      2,
-      dsStatus,
-      dsTimestamp
+      1,
+      dsStatus
     );
   }
 
   // -----------------------------------------------
-  // COMBINE SENSOR DATA
+  // COMBINE SENSOR DATA AND TIMESTAMPS
   // -----------------------------------------------
 
   object_t dhtNode;
   object_t dsNode;
 
+  object_t unixTimestampNode;
+  object_t readableTimestampNode;
+
   object_t finalJSON;
 
+  // Sensor nodes
+  writer.create(dhtNode, "DHT22", dhtJSON);
+  writer.create(dsNode, "DS18B20", dsJSON);
+
+  // Shared timestamp nodes
   writer.create(
-    dhtNode,
-    "DHT22",
-    dhtJSON
+    unixTimestampNode,
+    "TimestampUnixMs",
+    number_t((double)timestampUnixMs, 0)
   );
 
   writer.create(
-    dsNode,
-    "DS18B20",
-    dsJSON
+    readableTimestampNode,
+    "TimestampReadable",
+    string_t(timestampReadable)
   );
 
+  // Combine everything into one JSON object
   writer.join(
     finalJSON,
-    2,
+    4,
+    unixTimestampNode,
+    readableTimestampNode,
     dhtNode,
     dsNode
   );
 
   // -----------------------------------------------
-  // SEND LATEST SENSOR DATA
+  // UPDATE LATEST SENSOR DATA
   // -----------------------------------------------
 
   Serial.println("Updating latest sensor data...");
 
-  String historyPath = "/SensorHistory/" + String(TimestampUnixMs);
+  Database.set<object_t>(
+    aClient,
+    "/Sensors",
+    finalJSON,
+    firebaseCallback,
+    "sensorUpload"
+  );
+
+  // -----------------------------------------------
+  // SAVE HISTORICAL SENSOR DATA
+  // -----------------------------------------------
+
+  Serial.println("Saving historical sensor data...");
+
+  String historyPath =
+      "/SensorHistory/" + String(historyKey);
 
   Database.set<object_t>(
     aClient,
@@ -895,22 +961,10 @@ void uploadToFirebase() {
     firebaseCallback,
     "sensorHistoryUpload"
   );
-  
-  // -----------------------------------------------
-  // SAVE HISTORICAL SENSOR DATA
-  // -----------------------------------------------
 
-  Serial.println("Saving historical sensor data...");
-
-  Database.push<object_t>(
-    aClient,
-    "/SensorHistory",
-    finalJSON,
-    firebaseCallback,
-    "sensorHistoryUpload"
-  );
+  Serial.print("History path: ");
+  Serial.println(historyPath);
 }
-
 // =====================================================
 // FIREBASE CALLBACK
 // =====================================================
